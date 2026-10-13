@@ -1,0 +1,19 @@
+{
+  "name": "snowvpn-next",
+  "version": "3.1.22",
+  "description": "SnowVPN — новый интерфейс (Glass / Material 3 Expressive)",
+  "main": "main.js",
+  "author": "snowservice",
+  "license": "MIT",
+  "dependencies": {
+    "js-yaml": "^4.3.2"
+  },
+  "scripts": {
+    "start": "electron .",
+    "format": "oxfmt **/*.js"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "oxfmt": "^0.73.0"
+  }
+}
