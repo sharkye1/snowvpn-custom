@@ -1,5 +1,6 @@
 "use strict";
 const net = require("net");
+const fs = require("fs");
 const { spawn: spawn } = require("child_process");
 const { EventEmitter: EventEmitter } = require("events");
 const crypto = require("crypto");
@@ -119,6 +120,11 @@ class CoreBridge extends EventEmitter {
     return this.starting;
   }
   _spawnCore(port) {
+    if (process.platform !== "win32") {
+      try {
+        fs.chmodSync(this.coreExe, 0o755);
+      } catch (_) {}
+    }
     const env = Object.assign({}, process.env, { SAFE_PATHS: `${this.homeDir};${this.coreDir}` });
     this.proc = spawn(this.coreExe, [String(port)], {
       cwd: this.coreDir,

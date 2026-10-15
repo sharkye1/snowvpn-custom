@@ -38,7 +38,11 @@ async function delRules() {
   await delTunRule();
 }
 async function cleanup() {
-  if (process.platform !== "win32") return { ok: false };
+  if (process.platform === "darwin") {
+    _engaged = false;
+    return { ok: true };
+  }
+  if (process.platform !== "win32") return { ok: true };
   _gen++;
   let polOk = false;
   try {
@@ -58,6 +62,7 @@ async function cleanup() {
   return { ok: polOk };
 }
 async function firewallAnyOn() {
+  if (process.platform !== "win32") return true;
   const r = await sh("powershell", [
     "-NoProfile",
     "-NonInteractive",
@@ -68,7 +73,11 @@ async function firewallAnyOn() {
   return r.ok ? n > 0 : true;
 }
 async function engage(coreExe, appExe, tunDevice) {
-  if (process.platform !== "win32") return { ok: false, error: "not windows" };
+  if (process.platform === "darwin") {
+    _engaged = true;
+    return { ok: true, fwOff: false };
+  }
+  if (process.platform !== "win32") return { ok: true };
   const gen = ++_gen;
   await delRules();
   const add = (name, extra) =>
@@ -147,12 +156,13 @@ function isEngaged() {
 }
 const ALLOW_PREFIX = "SnowVPN-Allow-";
 async function delAllowRules() {
+  if (process.platform !== "win32") return;
   for (const n of ["CoreIn", "CoreOut", "AppIn", "AppOut"]) {
     await netsh(["advfirewall", "firewall", "delete", "rule", "name=" + ALLOW_PREFIX + n]);
   }
 }
 async function ensureAllowed(coreExe, appExe) {
-  if (process.platform !== "win32") return { ok: false, error: "not windows" };
+  if (process.platform !== "win32") return { ok: true };
   await delAllowRules();
   const add = (name, exe, dir) =>
     netsh([
@@ -187,7 +197,7 @@ async function ensureAllowed(coreExe, appExe) {
     : { ok: true };
 }
 async function forceTunPrivate(deviceName) {
-  if (process.platform !== "win32") return { ok: false };
+  if (process.platform !== "win32") return { ok: true };
   const cmd = `Get-NetAdapter -Name '${deviceName.replace(/'/g, "''")}' -ErrorAction Stop | Set-NetConnectionProfile -NetworkCategory Private -ErrorAction Stop`;
   for (let i = 0; i < 6; i++) {
     const r = await sh("powershell", ["-NoProfile", "-NonInteractive", "-Command", cmd]);

@@ -10,7 +10,8 @@
   },
   "scripts": {
     "start": "electron .",
-    "format": "oxfmt **/*.js"
+    "format": "oxfmt **/*.js",
+    "setup:mac": "chmod +x ./core/SnowVPNCore"
   },
   "devDependencies": {
     "electron": "^33.2.0",

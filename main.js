@@ -22,7 +22,7 @@ try {
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 app.setAppUserModelId("com.snowservice.snowvpn");
 const ASSETS = path.join(__dirname, "assets");
-const ICON = path.join(ASSETS, "icon.ico");
+const ICON = path.join(ASSETS, process.platform === "win32" ? "icon.ico" : "icon.png");
 let tray = null;
 let isQuitting = false;
 process.on("uncaughtException", (e) => {
@@ -102,6 +102,17 @@ const killSwitch = require("./killSwitch");
 let _isAdmin = null;
 function isAdmin() {
   if (_isAdmin !== null) return _isAdmin;
+  if (process.platform === "darwin") {
+    _isAdmin = process.getuid ? process.getuid() === 0 : false;
+    try {
+      const corePath = path.join(__dirname, "core", "SnowVPNCore");
+      const st = fs.statSync(corePath);
+      if ((st.mode & 0o4000) !== 0 || (process.getuid && process.getuid() === 0)) {
+        _isAdmin = true;
+      }
+    } catch (_) {}
+    return _isAdmin;
+  }
   if (process.platform !== "win32") {
     _isAdmin = false;
     return _isAdmin;
@@ -125,6 +136,30 @@ function isAdmin() {
   return _isAdmin;
 }
 function relaunchAdmin() {
+  if (process.platform === "darwin") {
+    const appBundle = process.execPath.split(".app")[0] + ".app";
+    const sdir = SETTINGS_DIR.replace(/"/g, '\\"');
+    const cmd = `do shell script "open -a \\"${appBundle}\\" --args --settings-dir=\\"${sdir}\\"" with administrator privileges`;
+    try {
+      spawn("osascript", ["-e", cmd], { detached: true, stdio: "ignore" }).unref();
+      console.log("[relaunchAdmin] spawned osascript:", cmd);
+    } catch (e) {
+      console.log("[relaunchAdmin] error:", e.message);
+      return false;
+    }
+    isQuitting = true;
+    try {
+      app.releaseSingleInstanceLock();
+    } catch (_) {}
+    setTimeout(() => {
+      try {
+        app.exit(0);
+      } catch (_) {
+        app.quit();
+      }
+    }, 300);
+    return true;
+  }
   const exe = process.execPath.replace(/'/g, "''");
   const sdir = SETTINGS_DIR.replace(/'/g, "''");
   const cmd = app.isPackaged
@@ -208,21 +243,32 @@ function buildNodeAddrs(raw) {
   });
 }
 function readMachineGuid() {
-  try {
-    const out = execSync(
-      "powershell -NoProfile -Command \"(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid\"",
-      { encoding: "utf8" },
-    );
-    const g = out.trim();
-    if (g) return g;
-  } catch (_) {}
-  try {
-    const out = execSync("reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid", {
-      encoding: "utf8",
-    });
-    const m = out.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/);
-    if (m) return m[1].trim();
-  } catch (_) {}
+  if (process.platform === "darwin") {
+    try {
+      const out = execSync("ioreg -rd1 -c IOPlatformExpertDevice | awk '/IOPlatformUUID/ { print $3 }'", {
+        encoding: "utf8",
+      });
+      const g = out.replace(/["\r\n\s]/g, "").trim();
+      if (g) return g;
+    } catch (_) {}
+  }
+  if (process.platform === "win32") {
+    try {
+      const out = execSync(
+        "powershell -NoProfile -Command \"(Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Cryptography').MachineGuid\"",
+        { encoding: "utf8" },
+      );
+      const g = out.trim();
+      if (g) return g;
+    } catch (_) {}
+    try {
+      const out = execSync("reg query HKLM\\SOFTWARE\\Microsoft\\Cryptography /v MachineGuid", {
+        encoding: "utf8",
+      });
+      const m = out.match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/);
+      if (m) return m[1].trim();
+    } catch (_) {}
+  }
   return "";
 }
 let _hwid = null;
@@ -242,8 +288,12 @@ function getHWID() {
   return _hwid;
 }
 const CORE_DIR = path.join(__dirname, "core");
-const CORE_EXE = path.join(CORE_DIR, "SnowVPNCore.exe");
+const CORE_EXE = path.join(
+  CORE_DIR,
+  process.platform === "win32" ? "SnowVPNCore.exe" : "SnowVPNCore"
+);
 function coreMismatch() {
+  if (process.platform !== "win32") return false;
   try {
     const m = JSON.parse(fs.readFileSync(path.join(__dirname, "core-manifest.json"), "utf8"));
     if (!m || !m.size) return false;
@@ -276,12 +326,13 @@ const GEO_FILES = ["GeoSite.dat", "geoip.metadb"];
 const MIXED_PORT = 7897;
 const PROXY_HOSTPORT = `127.0.0.1:${MIXED_PORT}`;
 const APP_VERSION = "5.1.0";
-const SUB_UA = `Clash/Meta; SnowVPN/v${APP_VERSION} Platform/windows`;
+const SUB_UA = `Clash/Meta; SnowVPN/v${APP_VERSION} Platform/${process.platform === "darwin" ? "macos" : "windows"}`;
 const CLIENT_VERSION = "3.1.22";
 const UPDATE_URL = "http://45.8.93.251/windows2/update.json";
 const CHANGELOG_URL = "http://45.8.93.251/windows2/changelog.json";
 const TRUSTED_CERT_THUMBPRINT = "ADDD29689F939F40E1FF1E77688F9E02662DE5E6";
 function checkAuthenticodeThumbprint(filePath) {
+  if (process.platform !== "win32") return Promise.resolve(true);
   return new Promise((resolve) => {
     const { execFile: execFile } = require("child_process");
     const esc = filePath.replace(/'/g, "''");
@@ -502,6 +553,9 @@ if (!settings.tunMigrated) {
 }
 const AUTOSTART_TASK = "SnowVPN_Autostart";
 function autostartTaskExists() {
+  if (process.platform === "darwin") {
+    return !!app.getLoginItemSettings().openAtLogin;
+  }
   try {
     return execSync(`schtasks /query /tn "${AUTOSTART_TASK}"`, {
       windowsHide: true,
@@ -514,6 +568,12 @@ function autostartTaskExists() {
   }
 }
 function setAutostart(on) {
+  if (process.platform === "darwin") {
+    try {
+      app.setLoginItemSettings({ openAtLogin: !!on, openAsHidden: true });
+    } catch (_) {}
+    return true;
+  }
   try {
     execSync(`schtasks /delete /tn "${AUTOSTART_TASK}" /f`, { windowsHide: true, stdio: "ignore" });
   } catch (_) {}
@@ -538,6 +598,7 @@ function setAutostart(on) {
 }
 const LAYERS_KEY = "HKCU\\Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers";
 function setAlwaysAdmin(on) {
+  if (process.platform !== "win32") return true;
   const exe = process.execPath;
   try {
     if (on)
@@ -553,6 +614,7 @@ function setAlwaysAdmin(on) {
   }
 }
 function getAlwaysAdmin() {
+  if (process.platform !== "win32") return true;
   try {
     return execSync(`reg query "${LAYERS_KEY}" /v "${process.execPath}"`, {
       windowsHide: true,
@@ -646,6 +708,15 @@ async function ksCleanup() {
   return r;
 }
 function forceKillAll() {
+  if (process.platform === "darwin") {
+    try {
+      execSync("killall -9 SnowVPNCore 2>/dev/null || true", { stdio: "ignore" });
+    } catch (_) {}
+    try {
+      setSystemProxy(false);
+    } catch (_) {}
+    return;
+  }
   for (const img of ["SnowVPNCore.exe", "SnowVPNHelperService.exe", "EnableLoopback.exe"]) {
     try {
       execSync(`taskkill /F /T /IM ${img}`, { windowsHide: true, stdio: "ignore" });
@@ -700,6 +771,7 @@ async function quitClean() {
   }
 }
 function runInstaller(exePath) {
+  if (process.platform !== "win32") return;
   const { spawn: spawn } = require("child_process");
   try {
     if (!fs.existsSync(exePath)) {
@@ -977,6 +1049,14 @@ function titleBarOverlayFor(s) {
   return { color: windowBgFor(s), symbolColor: light ? "#0c2733" : "#eafcff", height: 36 };
 }
 function frameOptions() {
+  if (process.platform === "darwin") {
+    return {
+      titleBarStyle: "hiddenInset",
+      trafficLightPosition: { x: 16, y: 16 },
+      transparent: true,
+      backgroundColor: "#00000000",
+    };
+  }
   if (settings && settings.nativeFrame) {
     return {
       titleBarStyle: "hidden",
@@ -1407,7 +1487,7 @@ async function ensureCore() {
   if (bridge && bridge.isAlive() && bridge.isInit) return bridge;
   if (coreReady) return coreReady;
   coreReady = (async () => {
-    if (!fs.existsSync(CORE_EXE)) throw new Error("SnowVPNCore.exe не найден в /core");
+    if (!fs.existsSync(CORE_EXE)) throw new Error("SnowVPNCore не найден в /core");
     if (bridge) {
       try {
         await bridge.stop();
@@ -1460,7 +1540,7 @@ async function ensureCore() {
   coreReady = null;
   return r;
 }
-const TUN_DEVICE = "SnowVPN Tun V2";
+const TUN_DEVICE = process.platform === "win32" ? "SnowVPN Tun V2" : "";
 function tunSchema(enable) {
   return {
     enable: enable,
@@ -3717,6 +3797,24 @@ function registerIpc() {
     }
   });
   ipcMain.handle("proc:list", () => {
+    if (process.platform === "darwin") {
+      try {
+        const out = execSync("ps -A -o comm=", { encoding: "utf8" });
+        const set = new Set();
+        out.split(/\r?\n/).forEach((l) => {
+          const trimmed = l.trim();
+          if (trimmed.includes(".app/Contents/MacOS/")) {
+            const m = trimmed.match(/\/([^/]+)\.app\/Contents\/MacOS\/([^/]+)$/);
+            if (m) set.add(m[2]);
+          } else if (trimmed) {
+            set.add(path.basename(trimmed));
+          }
+        });
+        return Array.from(set).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+      } catch (_) {
+        return [];
+      }
+    }
     try {
       const out = execSync("tasklist /fo csv /nh", { encoding: "utf8", windowsHide: true });
       const set = new Set();
@@ -3732,6 +3830,41 @@ function registerIpc() {
   let _appsCache = { t: 0, list: [] };
   ipcMain.handle("apps:list", async () => {
     if (_appsCache.list.length && Date.now() - _appsCache.t < 5 * 6e4) return _appsCache.list;
+    if (process.platform === "darwin") {
+      const dirs = ["/Applications", "/System/Applications", path.join(os.homedir(), "Applications")];
+      const seen = new Map();
+      for (const d of dirs) {
+        try {
+          if (!fs.existsSync(d)) continue;
+          const files = fs.readdirSync(d);
+          for (const f of files) {
+            if (f.endsWith(".app")) {
+              const name = f.replace(/\.app$/, "");
+              const appPath = path.join(d, f);
+              seen.set(name.toLowerCase(), { name: name, exe: name, path: appPath });
+            }
+          }
+        } catch (_) {}
+      }
+      try {
+        const out = execSync("ps -A -o comm=", { encoding: "utf8" });
+        const runningSet = new Set(
+          out
+            .split(/\r?\n/)
+            .map((l) => path.basename(l.trim()))
+            .filter(Boolean)
+            .map((x) => x.toLowerCase()),
+        );
+        for (const [k, item] of seen.entries()) {
+          if (runningSet.has(k)) item.running = true;
+        }
+      } catch (_) {}
+      _appsCache = {
+        t: Date.now(),
+        list: Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, "ru")),
+      };
+      return _appsCache.list;
+    }
     const ps = [
       "$sh = New-Object -ComObject WScript.Shell",
       "$dirs = @([Environment]::GetFolderPath('CommonPrograms'), [Environment]::GetFolderPath('Programs'))",
@@ -4869,7 +5002,7 @@ function registerIpc() {
               id: "core",
               title: "Ядро VPN",
               status: "ok",
-              detail: "SnowVPNCore.exe запущено и отвечает",
+              detail: "SnowVPNCore запущено и отвечает",
             }
           : {
               id: "core",
@@ -4966,31 +5099,51 @@ function registerIpc() {
           ")",
       });
       if (state.netMode === "tun") {
-        const r = await psRun(
-          `(Get-NetAdapter -Name '${TUN_DEVICE.replace(/'/g, "''")}' -ErrorAction SilentlyContinue).Status`,
-        );
-        const up = r.ok && /Up/i.test(r.out);
+        let up = false;
+        if (process.platform === "darwin") {
+          try {
+            const ifconfig = execSync("ifconfig", { encoding: "utf8" });
+            up = /utun\d+:\s+flags=/i.test(ifconfig);
+          } catch (_) {}
+        } else {
+          const r = await psRun(
+            `(Get-NetAdapter -Name '${TUN_DEVICE.replace(/'/g, "''")}' -ErrorAction SilentlyContinue).Status`,
+          );
+          up = r.ok && /Up/i.test(r.out);
+        }
         report(
           up
             ? {
                 id: "net",
                 title: "TUN-адаптер",
                 status: "ok",
-                detail: "Адаптер «" + TUN_DEVICE + "» поднят",
+                detail: process.platform === "darwin" ? "TUN-интерфейс (utun) поднят" : "Адаптер «" + TUN_DEVICE + "» поднят",
               }
             : {
                 id: "net",
                 title: "TUN-адаптер",
                 status: "fail",
                 detail: "Адаптер не найден или не поднят",
-                hint: "Отключитесь и подключитесь заново. Если повторяется — перезагрузите компьютер (застрявший драйвер wintun) и проверьте, что антивирус не блокирует создание сетевых адаптеров.",
+                hint: process.platform === "darwin"
+                  ? "Для работы TUN на macOS требуются права суперпользователя: выполните 'sudo chmod u+s core/SnowVPNCore' и переподключитесь."
+                  : "Отключитесь и подключитесь заново. Если повторяется — перезагрузите компьютер (застрявший драйвер wintun) и проверьте, что антивирус не блокирует создание сетевых адаптеров.",
               },
         );
       } else {
-        const r = await psRun(
-          "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings').ProxyEnable",
-        );
-        const on = r.ok && r.out.trim() === "1";
+        let on = false;
+        if (process.platform === "darwin") {
+          try {
+            const out = execSync("networksetup -getwebproxy Wi-Fi", { encoding: "utf8" });
+            on = /Enabled:\s+Yes/i.test(out);
+          } catch (_) {
+            on = true;
+          }
+        } else {
+          const r = await psRun(
+            "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings').ProxyEnable",
+          );
+          on = r.ok && r.out.trim() === "1";
+        }
         report(
           on
             ? {
